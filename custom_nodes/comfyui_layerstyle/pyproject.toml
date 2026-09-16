@@ -1,0 +1,15 @@
+[project]
+name = "comfyui_layerstyle"
+description = "A set of nodes for ComfyUI it generate image like Adobe Photoshop's Layer Style. the Drop Shadow is first completed node, and follow-up work is in progress."
+version = "2.0.40"
+license = {text = "MIT License"}
+dependencies = ["numpy", "pillow", "torch", "matplotlib", "Scipy", "scikit_image", "scikit_learn", "opencv-contrib-python", "pymatting", "timm", "colour-science",  "transformers",  "blend_modes",  "huggingface_hub", "loguru"]
+
+[project.urls]
+Repository = "https://github.com/chflame163/ComfyUI_LayerStyle"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "chflame163"
+DisplayName = "ComfyUI_LayerStyle"
+Icon = "https://avatars.githubusercontent.com/u/130118553"

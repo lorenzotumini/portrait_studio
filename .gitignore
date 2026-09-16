@@ -1,0 +1,48 @@
+# Local history and old exports. Keep these available locally, but review any
+# file before deliberately adding it to a release.
+/archive/
+
+# User supplied examples and generated results.
+/examples/*
+!/examples/.gitkeep
+/portrait_results/
+/results/
+/input/
+/output/
+/temp/
+
+# Model binaries are installed in ComfyUI, not stored in this repository.
+/models/
+*.safetensors
+*.ckpt
+*.pth
+*.onnx
+*.bin
+
+# Python caches and local environments.
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Local configuration and credentials.
+api_key.ini
+resource_dir.ini
+config.local.*
+
+# Third-party checkout metadata that is not needed at runtime.
+custom_nodes/comfyui_layerstyle/.tracking
+custom_nodes/comfyui_layerstyle/.github/
+custom_nodes/comfyui_layerstyle/image/
+custom_nodes/comfyui_layerstyle/workflow/
+
+# Editor and operating-system files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
