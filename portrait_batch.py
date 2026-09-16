@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Portrait Studio workflow for every portrait/background pair."""
+"""Run the Portrait Studio workflow for every portrait/background pair."""  # noqa: EXE001
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 # These are the defaults used by the current final workflow. Change them here
 # when the batch tool should use a different house style for every run.
 DEFAULTS = {
@@ -28,7 +27,7 @@ DEFAULTS = {
     "max_brightening_stops": 0.5,
     "max_darkening_stops": 2.0,
     "spill_mode": "auto",
-    "spill_strength": 0.91,
+    "spill_strength": 0.9,
     "spill_edge_width": 35,
 }
 
