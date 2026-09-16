@@ -1,6 +1,10 @@
 # Portrait Studio
 
-Portrait workflow based on ComfyUI with CLI batch tool. [`portrait_batch.py`](portrait_batch.py) submits the approved API workflow and saves the results locally.
+Portrait workflow based on ComfyUI with a dedicated CLI batch tool.
+
+![](assets/screenshot1.png)
+---
+![](assets/screenshot2.png)
 
 ## Install on a ComfyUI machine
 
