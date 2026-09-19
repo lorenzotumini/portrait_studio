@@ -8,7 +8,7 @@ Portrait workflow based on ComfyUI with a dedicated CLI batch tool.
 
 ## Install on a ComfyUI machine
 
-1. Install ComfyUI and its normal Python environment. A Windows NVIDIA Portable install is the easiest dedicated workstation option.
+1. Install ComfyUI and its normal Python environment. A Windows NVIDIA Portable [install](https://comfy.org/download) is the easiest dedicated workstation option.
 2. Copy both directories from `custom_nodes/` into the ComfyUI `custom_nodes/` directory:
 
    ```text
@@ -24,11 +24,11 @@ Portrait workflow based on ComfyUI with a dedicated CLI batch tool.
 
    Restart ComfyUI after installing or updating custom nodes.
 
-   The repository keeps LayerStyle's runtime code and required resources; its optional documentation screenshots and example workflows are left out of Git.
+   Alternatively, you can install the entire LayerStyle extension from the [Manager](https://docs.comfy.org/manager/install), while the portrait_tools are made specifically for this workflow and need to be copied manually.
 
-4. Put the model files listed in [`MODELS.md`](MODELS.md) in the matching ComfyUI `models/` folders. ComfyUI suggests the download link if the model is not present when trying to run the workflow.
+4. Put the model files listed in [`MODELS.md`](MODELS.md) in the matching ComfyUI `models/` folders. ComfyUI suggests the download link if the model is not present when trying to run the workflow. If you download the LayerStyle extension via the Manager you shouldn't need to install VITMatte manually.
 
-5. Copy the UI workflow into ComfyUI's workflow folder if it is not already there, then open it once in ComfyUI to confirm that all nodes and models resolve:
+5. Copy the UI workflow into ComfyUI's workflow folder or press Ctrl + o to open a workflow and Ctrl + s to save it, then you should be able to see if all the nodes and models resolve. In case of problems, the error panel on the right is very instructive and should be able to point you in the right direction.
 
    ```text
    ComfyUI/user/default/workflows/portrait_master_pipeline_v3.json
@@ -66,7 +66,9 @@ python portrait_batch.py \
 
 A single `--comfy-url` (or `$COMFY_URL`) still works for a one-GPU setup. If any job fails, the run continues on the remaining jobs and exits with a non-zero status.
 
-The script writes files such as `portrait_name__background_name.png` to the output folder. With a single ComfyUI instance it processes every portrait/background combination sequentially; with multiple instances it runs one parallel worker per instance and each worker grabs the next unfinished job, so the two GPUs self-balance. Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
+The script writes files such as `portrait_name__background_name.png` to the output folder. With a single ComfyUI instance it processes every portrait/background combination sequentially; with multiple instances it runs one parallel worker per instance and each worker grabs the next unfinished job, so the two GPUs self-balance.
+
+Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
 
 The defaults are defined near the top of `portrait_batch.py` and can also be overridden for a run. For example:
 
