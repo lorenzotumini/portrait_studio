@@ -44,16 +44,29 @@ python main.py --listen 127.0.0.1 --port 8188
 
 If the model directory is kept outside the ComfyUI checkout, add `--models-directory /path/to/models` to that command.
 
+On a multi-GPU machine you can start one ComfyUI instance per GPU and pass every URL to the batch tool:
+
+```bash
+python main.py --listen 127.0.0.1 --port 8188 --cuda-device 0
+python main.py --listen 127.0.0.1 --port 8189 --cuda-device 1 \
+  --database-url "sqlite:////path/to/ComfyUI/user/comfyui-8189.db"
+```
+
+Each instance loads its own copy of the models, so both GPUs need the full model set in VRAM. Also note the second instance must use a separate database: ComfyUI keeps state in `user/comfyui.db` (SQLite, single-writer), so two instances sharing the same user directory fail to start with a database lock error. The `--database-url` flag above points the second instance at its own file.
+
 Then, from this project folder, run the batch tool. It accepts a portrait folder and one or more background files or folders:
 
 ```bash
 python portrait_batch.py \
   --portraits /path/to/original_portraits \
   --backgrounds /path/to/backgrounds \
-  --output /path/to/portrait_results
+  --output /path/to/portrait_results \
+  --comfy-url http://127.0.0.1:8188 http://127.0.0.1:8189
 ```
 
-The script processes every portrait/background combination sequentially and writes files such as `portrait_name__background_name.png` to the output folder. Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
+A single `--comfy-url` (or `$COMFY_URL`) still works for a one-GPU setup. If any job fails, the run continues on the remaining jobs and exits with a non-zero status.
+
+The script writes files such as `portrait_name__background_name.png` to the output folder. With a single ComfyUI instance it processes every portrait/background combination sequentially; with multiple instances it runs one parallel worker per instance and each worker grabs the next unfinished job, so the two GPUs self-balance. Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
 
 The defaults are defined near the top of `portrait_batch.py` and can also be overridden for a run. For example:
 

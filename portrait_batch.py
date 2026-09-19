@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import re
 import secrets
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -131,17 +134,29 @@ def collect_backgrounds(values: list[str]) -> list[Path]:
     return sorted(unique.values())
 
 
-def output_name(portrait: Path, background: Path, output_dir: Path) -> Path:
+def output_name(portrait: Path, background: Path, output_dir: Path,
+                reserved: set[Path] | None = None) -> Path:
     clean = lambda value: re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "image"
     target = output_dir / f"{clean(portrait.stem)}__{clean(background.stem)}.png"
-    if not target.exists():
+    if not target.exists() and (reserved is None or target not in reserved):
         return target
     index = 2
     while True:
         candidate = output_dir / f"{clean(portrait.stem)}__{clean(background.stem)}_{index}.png"
-        if not candidate.exists():
+        if not candidate.exists() and (reserved is None or candidate not in reserved):
             return candidate
         index += 1
+
+
+def plan_output_names(jobs: list[tuple[Path, Path]], output_dir: Path) -> dict[tuple[Path, Path], Path]:
+    """Reserve unique output paths before workers start writing files."""
+    reserved: set[Path] = set()
+    targets: dict[tuple[Path, Path], Path] = {}
+    for portrait, background in jobs:
+        target = output_name(portrait, background, output_dir, reserved)
+        reserved.add(target)
+        targets[(portrait, background)] = target
+    return targets
 
 
 def arguments() -> argparse.Namespace:
@@ -151,7 +166,9 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--output", default="portrait_results", help="Output folder; defaults to ./portrait_results.")
     parser.add_argument("--reference", help="Optional reference portrait. If omitted, the workflow's configured reference is used.")
     parser.add_argument("--workflow", default=str(DEFAULT_WORKFLOW), help=argparse.SUPPRESS)
-    parser.add_argument("--comfy-url", default=os.environ.get("COMFY_URL", "http://127.0.0.1:8188"))
+    parser.add_argument("--comfy-url", nargs="+", default=[os.environ.get("COMFY_URL", "http://127.0.0.1:8188")],
+                        help="One or more ComfyUI URLs (one per GPU). Jobs are processed in parallel, "
+                             "one worker per instance. Defaults to $COMFY_URL or http://127.0.0.1:8188.")
     parser.add_argument("--aspect-width", type=int, default=DEFAULTS["aspect_width"])
     parser.add_argument("--aspect-height", type=int, default=DEFAULTS["aspect_height"])
     parser.add_argument("--exposure-strength", type=float, default=DEFAULTS["exposure_strength"])
@@ -168,9 +185,45 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def process_pair(base_url: str, workflow_path: Path, portrait: Path, background: Path,
+                 reference: Path | None, args: argparse.Namespace, target: Path) -> Path:
+    workflow = load_workflow(workflow_path)
+    portrait_input = upload_image(base_url, portrait)
+    background_input = upload_image(base_url, background)
+    set_widget(workflow, "120", "image", portrait_input)
+    set_widget(workflow, "125", "image", background_input)
+    if reference is not None:
+        set_widget(workflow, "180", "image", upload_image(base_url, reference))
+    else:
+        set_widget(workflow, "180", "image", portrait_input)
+    set_widget(workflow, "156", "aspect_width", args.aspect_width)
+    set_widget(workflow, "156", "aspect_height", args.aspect_height)
+    set_widget(workflow, "156", "center_subject", args.center_subject)
+    set_widget(workflow, "203", "mode", args.spill_mode)
+    set_widget(workflow, "203", "strength", args.spill_strength)
+    set_widget(workflow, "203", "edge_width", args.spill_edge_width)
+    set_widget(workflow, "46", "exposure_strength", args.exposure_strength)
+    set_widget(workflow, "46", "contrast_strength", args.contrast_strength)
+    set_widget(workflow, "46", "max_brightening_stops", args.max_brightening_stops)
+    set_widget(workflow, "46", "max_darkening_stops", args.max_darkening_stops)
+    set_widget(workflow, "141:25", "value", args.portrait_upscale)
+    set_widget(workflow, "160:25", "value", args.background_upscale)
+    image = queue_workflow(base_url, workflow)
+    payload = comfy_request(base_url, "/view?" + urllib.parse.urlencode(image))
+    target.write_bytes(payload)
+    return target
+
+
 def main() -> int:
     args = arguments()
-    base_url = args.comfy_url.rstrip("/")
+    base_urls = []
+    for url in args.comfy_url:
+        normalized_url = url.rstrip("/")
+        if not normalized_url:
+            raise ValueError("ComfyUI URLs must not be empty.")
+        if normalized_url in base_urls:
+            raise ValueError(f"Duplicate ComfyUI URL: {url}")
+        base_urls.append(normalized_url)
     portraits = image_files(Path(args.portraits).expanduser())
     backgrounds = collect_backgrounds(args.backgrounds)
     if not portraits:
@@ -180,38 +233,77 @@ def main() -> int:
         raise FileNotFoundError(reference)
     output_dir = Path(args.output).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Processing {len(portraits)} portrait(s) × {len(backgrounds)} background(s)")
+    print(f"Processing {len(portraits)} portrait(s) × {len(backgrounds)} background(s) "
+          f"across {len(base_urls)} instance(s): {', '.join(base_urls)}")
 
-    for portrait_index, portrait in enumerate(portraits, 1):
-        for background_index, background in enumerate(backgrounds, 1):
-            label = f"[{portrait_index}/{len(portraits)} × {background_index}/{len(backgrounds)}] {portrait.name} + {background.name}"
-            print(label, flush=True)
-            workflow = load_workflow(Path(args.workflow).expanduser())
-            portrait_input = upload_image(base_url, portrait)
-            background_input = upload_image(base_url, background)
-            set_widget(workflow, "120", "image", portrait_input)
-            set_widget(workflow, "125", "image", background_input)
-            if reference is not None:
-                set_widget(workflow, "180", "image", upload_image(base_url, reference))
-            else:
-                set_widget(workflow, "180", "image", portrait_input)
-            set_widget(workflow, "156", "aspect_width", args.aspect_width)
-            set_widget(workflow, "156", "aspect_height", args.aspect_height)
-            set_widget(workflow, "156", "center_subject", args.center_subject)
-            set_widget(workflow, "203", "mode", args.spill_mode)
-            set_widget(workflow, "203", "strength", args.spill_strength)
-            set_widget(workflow, "203", "edge_width", args.spill_edge_width)
-            set_widget(workflow, "46", "exposure_strength", args.exposure_strength)
-            set_widget(workflow, "46", "contrast_strength", args.contrast_strength)
-            set_widget(workflow, "46", "max_brightening_stops", args.max_brightening_stops)
-            set_widget(workflow, "46", "max_darkening_stops", args.max_darkening_stops)
-            set_widget(workflow, "141:25", "value", args.portrait_upscale)
-            set_widget(workflow, "160:25", "value", args.background_upscale)
-            image = queue_workflow(base_url, workflow)
-            payload = comfy_request(base_url, "/view?" + urllib.parse.urlencode(image))
-            target = output_name(portrait, background, output_dir)
-            target.write_bytes(payload)
+    # Shared work queue: each GPU worker grabs the next unfinished pair, so the
+    # load self-balances even if individual jobs run for different times.
+    jobs = [(portrait, background) for portrait in portraits for background in backgrounds]
+    output_targets = plan_output_names(jobs, output_dir)
+    pending_jobs = deque(jobs)
+    jobs_lock = threading.Lock()
+    errors: list[str] = []
+
+    def take_job() -> tuple[Path, Path] | None:
+        with jobs_lock:
+            if not pending_jobs:
+                return None
+            return pending_jobs.popleft()
+
+    def worker(base_url: str) -> None:
+        while True:
+            job = take_job()
+            if job is None:
+                return
+            portrait, background = job
+            print(f"[{base_url}] {portrait.name} + {background.name}", flush=True)
+            try:
+                target = process_pair(base_url, Path(args.workflow).expanduser(), portrait,
+                                      background, reference, args, output_targets[job])
+            except (TimeoutError, urllib.error.URLError) as error:
+                # A transport failure usually means this instance cannot make
+                # progress. Remove it from rotation and let another instance
+                # retry the current job instead of consuming the whole queue.
+                with jobs_lock:
+                    pending_jobs.appendleft(job)
+                print(f"Warning: [{base_url}] unavailable; requeued {portrait.name} + {background.name}: {error}",
+                      file=sys.stderr, flush=True)
+                return
+            except Exception as error:
+                message = f"[{base_url}] {portrait.name} + {background.name}: {error}"
+                with jobs_lock:
+                    errors.append(message)
+                print(f"Error: {message}", file=sys.stderr, flush=True)
+                continue
             print(f"  -> {target}", flush=True)
+
+    futures = []
+    with ThreadPoolExecutor(max_workers=len(base_urls), thread_name_prefix="comfy") as pool:
+        for base_url in base_urls:
+            futures.append((base_url, pool.submit(worker, base_url)))
+
+    # Exceptions outside the per-job handler must not disappear inside a
+    # Future. They indicate that a worker stopped unexpectedly.
+    for base_url, future in futures:
+        try:
+            future.result()
+        except Exception as error:
+            message = f"[{base_url}] worker stopped unexpectedly: {type(error).__name__}: {error}"
+            with jobs_lock:
+                errors.append(message)
+            print(f"Error: {message}", file=sys.stderr, flush=True)
+
+    with jobs_lock:
+        remaining_jobs = list(pending_jobs)
+    if remaining_jobs:
+        for portrait, background in remaining_jobs:
+            errors.append(f"{portrait.name} + {background.name}: no available ComfyUI instance")
+        print(f"Error: {len(remaining_jobs)} job(s) were not processed because no ComfyUI instance was available.",
+              file=sys.stderr, flush=True)
+
+    if errors:
+        print(f"Finished with {len(errors)} failed job(s).", file=sys.stderr)
+        return 1
     return 0
 
 
