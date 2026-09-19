@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import json
 import os
 import re
@@ -12,10 +11,11 @@ import secrets
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # These are the defaults used by the current final workflow. Change them here
@@ -23,10 +23,10 @@ from pathlib import Path
 DEFAULTS = {
     "aspect_width": 4,
     "aspect_height": 5,
-    "portrait_upscale": True,
-    "background_upscale": True,
-    "exposure_strength": 0.8,
-    "contrast_strength": 0.2,
+    "portrait_upscale": False,
+    "background_upscale": False,
+    "exposure_strength": 0.0, # 0.8
+    "contrast_strength": 0.0, # 0.2
     "max_brightening_stops": 0.5,
     "max_darkening_stops": 2.0,
     "spill_mode": "auto",
