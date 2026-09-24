@@ -10,6 +10,7 @@
 /input/
 /output/
 /temp/
+/HKN/
 
 # Model binaries are installed in ComfyUI, not stored in this repository.
 /models/

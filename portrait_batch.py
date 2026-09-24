@@ -29,8 +29,8 @@ DEFAULTS = {
     "background_upscale": False,
     "exposure_strength": 0.0, # 0.8
     "contrast_strength": 0.0, # 0.2
-    "max_brightening_stops": 0.5,
-    "max_darkening_stops": 2.0,
+    "max_brightening_stops": 0.0, # 0.5,
+    "max_darkening_stops": 0.0, # 2.0,
     "spill_mode": "auto",
     "spill_strength": 0.9,
     "spill_edge_width": 35,
@@ -38,8 +38,8 @@ DEFAULTS = {
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
-# RAW formats ComfyUI cannot read. They are decoded to 8-bit sRGB PNG before
-# upload (see convert_raw); ComfyUI flattens every image to 8-bit RGB anyway,
+# RAW formats ComfyUI cannot read. They are decoded to high-quality 8-bit sRGB
+# JPEG before upload (see convert_raw); ComfyUI flattens every image to 8-bit RGB anyway,
 # so the conversion is lossless with respect to what the workflow consumes.
 RAW_EXTENSIONS = {
     ".arw", ".cr2", ".cr3", ".dng", ".erf", ".mrw", ".nef", ".nrf", ".nrw",
@@ -94,17 +94,19 @@ def _magick_binary() -> str | None:
 
 
 def convert_raw(path: Path, cache_dir: Path) -> Path:
-    """Decode a RAW file into a cached 8-bit sRGB PNG.
+    """Decode a RAW file into a cached high-quality 8-bit sRGB JPEG.
 
-    ComfyUI's LoadImage flattens every image to 8-bit RGB, so the PNG is
-    lossless with respect to what the workflow can consume. Decodes use the
-    camera's embedded white balance ("as shot"). The PNG is cached in
-    cache_dir and reused until the source RAW is modified.
+    ComfyUI's LoadImage flattens every image to 8-bit RGB, and a JPEG at
+    quality 92 is visually lossless for the workflow's purposes. JPEG keeps
+    uploads far below ComfyUI's 100 MiB request limit, which full-resolution
+    PNGs of large RAWs can exceed. Decodes use the camera's embedded white
+    balance ("as shot"). The JPEG is cached in cache_dir and reused until
+    the source RAW is modified.
     """
     with _raw_lock:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        name = f"{path.stem}.png" if path.parent.resolve() == cache_dir.resolve() \
-            else f"{path.parent.name}_{path.stem}.png"
+        name = f"{path.stem}.jpg" if path.parent.resolve() == cache_dir.resolve() \
+            else f"{path.parent.name}_{path.stem}.jpg"
         dest = cache_dir / name
         if dest.exists() and dest.stat().st_mtime >= path.stat().st_mtime:
             return dest
@@ -115,15 +117,18 @@ def convert_raw(path: Path, cache_dir: Path) -> Path:
                 "support is required on the machine running this script.")
         tmp = dest.with_name(dest.name + f".part.{os.getpid()}")
         try:
-            # "png:" forces the output format: the temp file's extension is not .png.
-            command = [binary, str(path), "-auto-orient", "-colorspace", "sRGB", f"png:{tmp}"]
-            proc = subprocess.run(command, capture_output=True, text=True)
+            # "jpeg:" forces the output format: the temp file's extension is not .jpg.
+            command = [
+                binary, str(path), "-auto-orient", "-colorspace", "sRGB",
+                "-quality", "92", "-sampling-factor", "4:2:0", f"jpeg:{tmp}",
+            ]
+            proc = subprocess.run(command, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
                 raise RuntimeError(f"RAW conversion failed for {path.name}: {proc.stderr.strip()[:400]}")
             os.replace(tmp, dest)
         finally:
             tmp.unlink(missing_ok=True)
-        print(f"Converted RAW {path.name} -> {dest.name}", flush=True)
+        print(f"Converted RAW {path.name} -> {dest.name} ({dest.stat().st_size // (1024 * 1024)} MiB)", flush=True)
     return dest
 
 
@@ -255,7 +260,7 @@ def arguments() -> argparse.Namespace:
                              "as <portrait>__cutout.png. The cutout uses the same matte and color "
                              "correction as the composited result but not its sharpen/grain.")
     parser.add_argument("--raw-cache-dir", default="~/.cache/portrait_studio/raw",
-                        help="Cache directory for RAW inputs decoded to PNG before upload "
+                        help="Cache directory for RAW inputs decoded to JPEG before upload "
                              "(ComfyUI cannot read RAW files). Defaults to %(default)s.")
     parser.add_argument("--no-portrait-upscale", action="store_false", dest="portrait_upscale", default=DEFAULTS["portrait_upscale"])
     parser.add_argument("--no-background-upscale", action="store_false", dest="background_upscale", default=DEFAULTS["background_upscale"])
@@ -270,14 +275,15 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
     workflow = load_workflow(workflow_path, require_cutout=args.cutout)
     raw_cache = Path(args.raw_cache_dir).expanduser()
 
-    def stage(path: Path | None) -> Path | None:
-        if path is not None and path.suffix.lower() in RAW_EXTENSIONS:
+    def stage(path: Path) -> Path:
+        if path.suffix.lower() in RAW_EXTENSIONS:
             return convert_raw(path, raw_cache)
         return path
 
     portrait = stage(portrait)
     background = stage(background)
-    reference = stage(reference)
+    if reference is not None:
+        reference = stage(reference)
     portrait_input = upload_image(base_url, portrait)
     background_input = upload_image(base_url, background)
     set_widget(workflow, "120", "image", portrait_input)
@@ -370,7 +376,7 @@ def main() -> int:
                 print(f"Warning: [{base_url}] unavailable; requeued {portrait.name} + {background.name}: {error}",
                       file=sys.stderr, flush=True)
                 return
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - one failed job must not stop the batch
                 message = f"[{base_url}] {portrait.name} + {background.name}: {error}"
                 with jobs_lock:
                     errors.append(message)
@@ -388,7 +394,7 @@ def main() -> int:
     for base_url, future in futures:
         try:
             future.result()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - last-resort report for a crashed worker
             message = f"[{base_url}] worker stopped unexpectedly: {type(error).__name__}: {error}"
             with jobs_lock:
                 errors.append(message)
