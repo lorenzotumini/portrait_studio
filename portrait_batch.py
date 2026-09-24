@@ -8,6 +8,8 @@ import json
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +37,16 @@ DEFAULTS = {
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+# RAW formats ComfyUI cannot read. They are decoded to 8-bit sRGB PNG before
+# upload (see convert_raw); ComfyUI flattens every image to 8-bit RGB anyway,
+# so the conversion is lossless with respect to what the workflow consumes.
+RAW_EXTENSIONS = {
+    ".arw", ".cr2", ".cr3", ".dng", ".erf", ".mrw", ".nef", ".nrf", ".nrw",
+    ".orf", ".pef", ".raf", ".raw", ".rwl", ".rw2", ".sr2", ".x3f",
+}
+
+INPUT_EXTENSIONS = IMAGE_EXTENSIONS | RAW_EXTENSIONS
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_WORKFLOW = PROJECT_DIR / "workflow" / "portrait_master_pipeline_v3_api.json"
 
@@ -66,6 +78,53 @@ def upload_image(base_url: str, path: Path) -> str:
     except urllib.error.HTTPError as error:
         raise ValueError(describe_http_error(error)) from error
     return "/".join(part for part in (result.get("subfolder", ""), result["name"]) if part)
+
+
+_raw_lock = threading.Lock()
+_magick_path: str | None = None
+_magick_checked = False
+
+
+def _magick_binary() -> str | None:
+    global _magick_path, _magick_checked
+    if not _magick_checked:
+        _magick_path = shutil.which("magick") or shutil.which("convert")
+        _magick_checked = True
+    return _magick_path
+
+
+def convert_raw(path: Path, cache_dir: Path) -> Path:
+    """Decode a RAW file into a cached 8-bit sRGB PNG.
+
+    ComfyUI's LoadImage flattens every image to 8-bit RGB, so the PNG is
+    lossless with respect to what the workflow can consume. Decodes use the
+    camera's embedded white balance ("as shot"). The PNG is cached in
+    cache_dir and reused until the source RAW is modified.
+    """
+    with _raw_lock:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        name = f"{path.stem}.png" if path.parent.resolve() == cache_dir.resolve() \
+            else f"{path.parent.name}_{path.stem}.png"
+        dest = cache_dir / name
+        if dest.exists() and dest.stat().st_mtime >= path.stat().st_mtime:
+            return dest
+        binary = _magick_binary()
+        if binary is None:
+            raise RuntimeError(
+                f"Cannot decode RAW file {path.name}: ImageMagick (magick) with libraw "
+                "support is required on the machine running this script.")
+        tmp = dest.with_name(dest.name + f".part.{os.getpid()}")
+        try:
+            # "png:" forces the output format: the temp file's extension is not .png.
+            command = [binary, str(path), "-auto-orient", "-colorspace", "sRGB", f"png:{tmp}"]
+            proc = subprocess.run(command, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f"RAW conversion failed for {path.name}: {proc.stderr.strip()[:400]}")
+            os.replace(tmp, dest)
+        finally:
+            tmp.unlink(missing_ok=True)
+        print(f"Converted RAW {path.name} -> {dest.name}", flush=True)
+    return dest
 
 
 def load_workflow(path: Path, require_cutout: bool = False) -> dict:
@@ -128,9 +187,9 @@ def queue_workflow(base_url: str, workflow: dict, want_cutout: bool = False) -> 
 
 def image_files(value: Path) -> list[Path]:
     if value.is_file():
-        return [value] if value.suffix.lower() in IMAGE_EXTENSIONS else []
+        return [value] if value.suffix.lower() in INPUT_EXTENSIONS else []
     if value.is_dir():
-        return sorted(path for path in value.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+        return sorted(path for path in value.iterdir() if path.is_file() and path.suffix.lower() in INPUT_EXTENSIONS)
     raise FileNotFoundError(value)
 
 
@@ -195,6 +254,9 @@ def arguments() -> argparse.Namespace:
                         help="Also save each portrait without a background (PNG with transparent alpha) "
                              "as <portrait>__cutout.png. The cutout uses the same matte and color "
                              "correction as the composited result but not its sharpen/grain.")
+    parser.add_argument("--raw-cache-dir", default="~/.cache/portrait_studio/raw",
+                        help="Cache directory for RAW inputs decoded to PNG before upload "
+                             "(ComfyUI cannot read RAW files). Defaults to %(default)s.")
     parser.add_argument("--no-portrait-upscale", action="store_false", dest="portrait_upscale", default=DEFAULTS["portrait_upscale"])
     parser.add_argument("--no-background-upscale", action="store_false", dest="background_upscale", default=DEFAULTS["background_upscale"])
     parser.add_argument("--center-subject", action="store_true", default=True)
@@ -206,6 +268,16 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
                  reference: Path | None, args: argparse.Namespace, target: Path,
                  cutout_target: Path | None = None) -> Path:
     workflow = load_workflow(workflow_path, require_cutout=args.cutout)
+    raw_cache = Path(args.raw_cache_dir).expanduser()
+
+    def stage(path: Path | None) -> Path | None:
+        if path is not None and path.suffix.lower() in RAW_EXTENSIONS:
+            return convert_raw(path, raw_cache)
+        return path
+
+    portrait = stage(portrait)
+    background = stage(background)
+    reference = stage(reference)
     portrait_input = upload_image(base_url, portrait)
     background_input = upload_image(base_url, background)
     set_widget(workflow, "120", "image", portrait_input)

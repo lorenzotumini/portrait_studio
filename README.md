@@ -34,6 +34,8 @@ Portrait workflow based on ComfyUI with a dedicated CLI batch tool.
    ComfyUI/user/default/workflows/portrait_master_pipeline_v3.json
    ```
 
+6. **Only if you feed RAW files** (`.rw2`, `.cr2`, `.nef`, ...) to the batch tool: install ImageMagick with libraw support on the machine that runs `portrait_batch.py` (for example `sudo apt install imagemagick`). The script finds `magick` on the `PATH` and decodes RAW inputs to PNG before uploading them; plain image-only runs do not need it.
+
 ## Run a batch
 
 Start ComfyUI first, for example:
@@ -71,6 +73,8 @@ The script writes files such as `portrait_name__background_name.png` to the outp
 Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
 
 Add `--cutout` to also save each portrait without a background as `portrait_name__cutout.png` (PNG with transparent alpha). The cutout is the color-corrected matte result from before the background composite, so it does not include the final sharpen or grain. It depends only on the portrait and the reference, so each portrait produces a single cutout shared across all of its background combinations; a rerun skips cutouts that already exist on disk.
+
+RAW files (`.rw2`, `.cr2`, `.nef`, `.arw`, `.dng`, and other libraw formats) are accepted as portraits, backgrounds, or references. ComfyUI cannot read them, so the script decodes each one to an 8-bit sRGB PNG with ImageMagick before uploading; the decodes use the camera's embedded ("as shot") white balance. ComfyUI flattens every input to 8-bit RGB anyway, so the PNG loses nothing the workflow could use. Decodes are cached in `~/.cache/portrait_studio/raw` (override with `--raw-cache-dir`) and are only repeated if the source RAW is modified. ImageMagick with libraw support (`magick` on `PATH`) is required only when RAW inputs are used.
 
 The defaults are defined near the top of `portrait_batch.py` and can also be overridden for a run. For example:
 
