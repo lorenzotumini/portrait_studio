@@ -68,9 +68,12 @@ def upload_image(base_url: str, path: Path) -> str:
     return "/".join(part for part in (result.get("subfolder", ""), result["name"]) if part)
 
 
-def load_workflow(path: Path) -> dict:
+def load_workflow(path: Path, require_cutout: bool = False) -> dict:
     workflow = json.loads(path.read_text())
     required = {"120", "125", "156", "180", "203", "46", "141:25", "160:25", "147"}
+    if require_cutout:
+        # Node 207 is a PreviewImage fed by node 46 (the color-corrected, transparent-background cutout).
+        required.add("207")
     missing = required.difference(workflow)
     if missing:
         raise ValueError(f"Workflow is missing the nodes used by this script: {', '.join(sorted(missing))}")
@@ -84,7 +87,7 @@ def set_widget(workflow: dict, node_id: str, name: str, value) -> None:
     node["inputs"][name] = value
 
 
-def queue_workflow(base_url: str, workflow: dict) -> dict:
+def queue_workflow(base_url: str, workflow: dict, want_cutout: bool = False) -> dict:
     try:
         response = json.loads(comfy_request(base_url, "/prompt", json.dumps({"prompt": workflow}).encode(), "POST", {
             "Content-Type": "application/json",
@@ -104,10 +107,17 @@ def queue_workflow(base_url: str, workflow: dict) -> dict:
             continue
         status = history.get("status", {})
         if status.get("status_str") == "success":
-            images = history.get("outputs", {}).get("147", {}).get("images", [])
+            outputs = history.get("outputs", {})
+            images = outputs.get("147", {}).get("images", [])
             if not images:
                 raise ValueError("Workflow completed without a final image.")
-            return images[0]
+            result = {"final": images[0]}
+            if want_cutout:
+                cutout_images = outputs.get("207", {}).get("images", [])
+                if not cutout_images:
+                    raise ValueError("Workflow completed without a cutout image.")
+                result["cutout"] = cutout_images[0]
+            return result
         if status.get("status_str") in {"error", "failed"}:
             messages = status.get("messages", [])
             detail = f": {messages[-1]}" if messages else ""
@@ -134,15 +144,18 @@ def collect_backgrounds(values: list[str]) -> list[Path]:
     return sorted(unique.values())
 
 
+def clean_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "image"
+
+
 def output_name(portrait: Path, background: Path, output_dir: Path,
                 reserved: set[Path] | None = None) -> Path:
-    clean = lambda value: re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "image"
-    target = output_dir / f"{clean(portrait.stem)}__{clean(background.stem)}.png"
+    target = output_dir / f"{clean_name(portrait.stem)}__{clean_name(background.stem)}.png"
     if not target.exists() and (reserved is None or target not in reserved):
         return target
     index = 2
     while True:
-        candidate = output_dir / f"{clean(portrait.stem)}__{clean(background.stem)}_{index}.png"
+        candidate = output_dir / f"{clean_name(portrait.stem)}__{clean_name(background.stem)}_{index}.png"
         if not candidate.exists() and (reserved is None or candidate not in reserved):
             return candidate
         index += 1
@@ -178,6 +191,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--spill-mode", choices=("auto", "off", "force green"), default=DEFAULTS["spill_mode"])
     parser.add_argument("--spill-strength", type=float, default=DEFAULTS["spill_strength"])
     parser.add_argument("--spill-edge-width", type=int, default=DEFAULTS["spill_edge_width"])
+    parser.add_argument("--cutout", action="store_true", default=False,
+                        help="Also save each portrait without a background (PNG with transparent alpha) "
+                             "as <portrait>__cutout.png. The cutout uses the same matte and color "
+                             "correction as the composited result but not its sharpen/grain.")
     parser.add_argument("--no-portrait-upscale", action="store_false", dest="portrait_upscale", default=DEFAULTS["portrait_upscale"])
     parser.add_argument("--no-background-upscale", action="store_false", dest="background_upscale", default=DEFAULTS["background_upscale"])
     parser.add_argument("--center-subject", action="store_true", default=True)
@@ -186,8 +203,9 @@ def arguments() -> argparse.Namespace:
 
 
 def process_pair(base_url: str, workflow_path: Path, portrait: Path, background: Path,
-                 reference: Path | None, args: argparse.Namespace, target: Path) -> Path:
-    workflow = load_workflow(workflow_path)
+                 reference: Path | None, args: argparse.Namespace, target: Path,
+                 cutout_target: Path | None = None) -> Path:
+    workflow = load_workflow(workflow_path, require_cutout=args.cutout)
     portrait_input = upload_image(base_url, portrait)
     background_input = upload_image(base_url, background)
     set_widget(workflow, "120", "image", portrait_input)
@@ -208,9 +226,17 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
     set_widget(workflow, "46", "max_darkening_stops", args.max_darkening_stops)
     set_widget(workflow, "141:25", "value", args.portrait_upscale)
     set_widget(workflow, "160:25", "value", args.background_upscale)
-    image = queue_workflow(base_url, workflow)
-    payload = comfy_request(base_url, "/view?" + urllib.parse.urlencode(image))
+    result = queue_workflow(base_url, workflow, want_cutout=args.cutout)
+    payload = comfy_request(base_url, "/view?" + urllib.parse.urlencode(result["final"]))
     target.write_bytes(payload)
+    if cutout_target is not None and not cutout_target.exists():
+        # The cutout is identical for every background of the same portrait, so each
+        # portrait saves it once; workers that race on the same file write identical
+        # bytes, and the atomic replace keeps the file whole either way.
+        cutout_payload = comfy_request(base_url, "/view?" + urllib.parse.urlencode(result["cutout"]))
+        tmp_path = cutout_target.with_name(cutout_target.name + ".tmp")
+        tmp_path.write_bytes(cutout_payload)
+        os.replace(tmp_path, cutout_target)
     return target
 
 
@@ -240,6 +266,8 @@ def main() -> int:
     # load self-balances even if individual jobs run for different times.
     jobs = [(portrait, background) for portrait in portraits for background in backgrounds]
     output_targets = plan_output_names(jobs, output_dir)
+    cutout_targets = {portrait: output_dir / f"{clean_name(portrait.stem)}__cutout.png"
+                      for portrait in portraits} if args.cutout else None
     pending_jobs = deque(jobs)
     jobs_lock = threading.Lock()
     errors: list[str] = []
@@ -259,7 +287,8 @@ def main() -> int:
             print(f"[{base_url}] {portrait.name} + {background.name}", flush=True)
             try:
                 target = process_pair(base_url, Path(args.workflow).expanduser(), portrait,
-                                      background, reference, args, output_targets[job])
+                                      background, reference, args, output_targets[job],
+                                      cutout_targets[portrait] if cutout_targets else None)
             except (TimeoutError, urllib.error.URLError) as error:
                 # A transport failure usually means this instance cannot make
                 # progress. Remove it from rotation and let another instance

@@ -70,6 +70,8 @@ The script writes files such as `portrait_name__background_name.png` to the outp
 
 Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
 
+Add `--cutout` to also save each portrait without a background as `portrait_name__cutout.png` (PNG with transparent alpha). The cutout is the color-corrected matte result from before the background composite, so it does not include the final sharpen or grain. It depends only on the portrait and the reference, so each portrait produces a single cutout shared across all of its background combinations; a rerun skips cutouts that already exist on disk.
+
 The defaults are defined near the top of `portrait_batch.py` and can also be overridden for a run. For example:
 
 ```bash
@@ -83,4 +85,4 @@ The batch tool uses only Python's standard library. It does not download models 
 
 ## Updating the workflow
 
-Make and test graph changes in ComfyUI, export the API workflow, and replace both files in `workflow/`. Keep the node IDs used by `portrait_batch.py` (`120`, `125`, `156`, `141:25`, `160:25`, `180`, `203`, and `46`) stable, or update the corresponding mappings in the script together with the workflow.
+Make and test graph changes in ComfyUI, export the API workflow, and replace both files in `workflow/`. Keep the node IDs used by `portrait_batch.py` (`120`, `125`, `156`, `141:25`, `160:25`, `180`, `203`, `46`, and `207` for `--cutout`) stable, or update the corresponding mappings in the script together with the workflow. Node `207` is a `PreviewImage` wired to node `46` so the transparent-background cutout appears in the ComfyUI history.
