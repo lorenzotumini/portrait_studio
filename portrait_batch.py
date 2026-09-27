@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -31,22 +32,22 @@ DEFAULTS = {
     "contrast_strength": 0.0, # 0.2
     "max_brightening_stops": 0.0, # 0.5,
     "max_darkening_stops": 0.0, # 2.0,
-    "spill_mode": "auto",
+    "spill_mode": "force green",
     "spill_strength": 0.9,
     "spill_edge_width": 35,
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
 
 # RAW formats ComfyUI cannot read. They are decoded to high-quality 8-bit sRGB
-# JPEG before upload (see convert_raw); ComfyUI flattens every image to 8-bit RGB anyway,
-# so the conversion is lossless with respect to what the workflow consumes.
+# JPEG before upload. JPEG compression is lossy; the workflow consumes 8-bit RGB.
 RAW_EXTENSIONS = {
     ".arw", ".cr2", ".cr3", ".dng", ".erf", ".mrw", ".nef", ".nrf", ".nrw",
     ".orf", ".pef", ".raf", ".raw", ".rwl", ".rw2", ".sr2", ".x3f",
 }
 
-INPUT_EXTENSIONS = IMAGE_EXTENSIONS | RAW_EXTENSIONS
+INPUT_EXTENSIONS = IMAGE_EXTENSIONS | RAW_EXTENSIONS | HEIF_EXTENSIONS
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_WORKFLOW = PROJECT_DIR / "workflow" / "portrait_master_pipeline_v3_api.json"
 
@@ -93,42 +94,44 @@ def _magick_binary() -> str | None:
     return _magick_path
 
 
-def convert_raw(path: Path, cache_dir: Path) -> Path:
-    """Decode a RAW file into a cached high-quality 8-bit sRGB JPEG.
-
-    ComfyUI's LoadImage flattens every image to 8-bit RGB, and a JPEG at
-    quality 92 is visually lossless for the workflow's purposes. JPEG keeps
-    uploads far below ComfyUI's 100 MiB request limit, which full-resolution
-    PNGs of large RAWs can exceed. Decodes use the camera's embedded white
-    balance ("as shot"). The JPEG is cached in cache_dir and reused until
-    the source RAW is modified.
-    """
+def convert_input_image(path: Path, cache_dir: Path) -> Path:
+    """Decode RAW or HEIC/HEIF to a cached 8-bit JPEG before upload."""
+    is_heif = path.suffix.lower() in HEIF_EXTENSIONS
+    kind = "HEIC/HEIF" if is_heif else "RAW"
     with _raw_lock:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        name = f"{path.stem}.jpg" if path.parent.resolve() == cache_dir.resolve() \
-            else f"{path.parent.name}_{path.stem}.jpg"
-        dest = cache_dir / name
-        if dest.exists() and dest.stat().st_mtime >= path.stat().st_mtime:
+        source = path.resolve()
+        stat = source.stat()
+        key = f"v2:{source}:{stat.st_size}:{stat.st_mtime_ns}"
+        digest = hashlib.sha256(key.encode()).hexdigest()[:20]
+        dest = cache_dir / f"{path.stem}_{digest}.jpg"
+        if dest.exists():
             return dest
         binary = _magick_binary()
         if binary is None:
             raise RuntimeError(
-                f"Cannot decode RAW file {path.name}: ImageMagick (magick) with libraw "
+                f"Cannot decode {kind} file {path.name}: ImageMagick (magick) with "
+                f"{'libheif' if is_heif else 'libraw'} "
                 "support is required on the machine running this script.")
         tmp = dest.with_name(dest.name + f".part.{os.getpid()}")
         try:
             # "jpeg:" forces the output format: the temp file's extension is not .jpg.
-            command = [
-                binary, str(path), "-auto-orient", "-colorspace", "sRGB",
-                "-quality", "92", "-sampling-factor", "4:2:0", f"jpeg:{tmp}",
-            ]
+            # Select the primary/first HEIF image, not thumbnails or auxiliary images.
+            command = [binary, str(source) + ("[0]" if is_heif else ""), "-auto-orient"]
+            if is_heif:
+                # Transform embedded profiles (e.g. Display P3) before ComfyUI drops them.
+                command += ["-profile", str(PROJECT_DIR / "assets" / "sRGB.icc")]
+            command += ["-colorspace", "sRGB", "-depth", "8",
+                        "-quality", "95" if is_heif else "92",
+                        "-sampling-factor", "4:4:4" if is_heif else "4:2:0", f"jpeg:{tmp}"]
             proc = subprocess.run(command, capture_output=True, text=True, check=False)
             if proc.returncode != 0:
-                raise RuntimeError(f"RAW conversion failed for {path.name}: {proc.stderr.strip()[:400]}")
+                raise RuntimeError(f"{kind} conversion failed for {path.name} (requires ImageMagick "
+                                   f"with {'libheif' if is_heif else 'libraw'} support): {proc.stderr.strip()[:400]}")
             os.replace(tmp, dest)
         finally:
             tmp.unlink(missing_ok=True)
-        print(f"Converted RAW {path.name} -> {dest.name} ({dest.stat().st_size // (1024 * 1024)} MiB)", flush=True)
+        print(f"Converted {kind} {path.name} -> {dest.name} ({dest.stat().st_size // (1024 * 1024)} MiB)", flush=True)
     return dest
 
 
@@ -241,7 +244,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--portraits", required=True, help="Folder (or image file) containing the original portraits.")
     parser.add_argument("--backgrounds", required=True, nargs="+", help="One or more background files or folders.")
     parser.add_argument("--output", default="portrait_results", help="Output folder; defaults to ./portrait_results.")
-    parser.add_argument("--reference", help="Optional reference portrait. If omitted, the workflow's configured reference is used.")
+    parser.add_argument("--reference", help="Optional reference portrait. If omitted, the input portrait is used.")
     parser.add_argument("--workflow", default=str(DEFAULT_WORKFLOW), help=argparse.SUPPRESS)
     parser.add_argument("--comfy-url", nargs="+", default=[os.environ.get("COMFY_URL", "http://127.0.0.1:8188")],
                         help="One or more ComfyUI URLs (one per GPU). Jobs are processed in parallel, "
@@ -259,9 +262,10 @@ def arguments() -> argparse.Namespace:
                         help="Also save each portrait without a background (PNG with transparent alpha) "
                              "as <portrait>__cutout.png. The cutout uses the same matte and color "
                              "correction as the composited result but not its sharpen/grain.")
-    parser.add_argument("--raw-cache-dir", default="~/.cache/portrait_studio/raw",
-                        help="Cache directory for RAW inputs decoded to JPEG before upload "
-                             "(ComfyUI cannot read RAW files). Defaults to %(default)s.")
+    parser.add_argument("--input-cache-dir", "--raw-cache-dir", dest="raw_cache_dir",
+                        default="~/.cache/portrait_studio/raw",
+                        help="Cache directory for RAW and HEIC/HEIF inputs decoded to JPEG before upload. "
+                             "Defaults to %(default)s; --raw-cache-dir remains an alias.")
     parser.add_argument("--no-portrait-upscale", action="store_false", dest="portrait_upscale", default=DEFAULTS["portrait_upscale"])
     parser.add_argument("--no-background-upscale", action="store_false", dest="background_upscale", default=DEFAULTS["background_upscale"])
     parser.add_argument("--center-subject", action="store_true", default=True)
@@ -276,8 +280,8 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
     raw_cache = Path(args.raw_cache_dir).expanduser()
 
     def stage(path: Path) -> Path:
-        if path.suffix.lower() in RAW_EXTENSIONS:
-            return convert_raw(path, raw_cache)
+        if path.suffix.lower() in RAW_EXTENSIONS | HEIF_EXTENSIONS:
+            return convert_input_image(path, raw_cache)
         return path
 
     portrait = stage(portrait)

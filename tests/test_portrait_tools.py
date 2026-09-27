@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-spec = importlib.util.spec_from_file_location("portrait_tools", Path(__file__).with_name("__init__.py"))
+spec = importlib.util.spec_from_file_location("portrait_tools", Path(__file__).resolve().parents[1] / "custom_nodes" / "portrait_tools" / "__init__.py")
 portrait = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(portrait)
 

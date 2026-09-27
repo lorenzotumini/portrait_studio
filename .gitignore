@@ -35,12 +35,6 @@ api_key.ini
 resource_dir.ini
 config.local.*
 
-# Third-party checkout metadata that is not needed at runtime.
-custom_nodes/comfyui_layerstyle/.tracking
-custom_nodes/comfyui_layerstyle/.github/
-custom_nodes/comfyui_layerstyle/image/
-custom_nodes/comfyui_layerstyle/workflow/
-
 # Editor and operating-system files.
 .DS_Store
 Thumbs.db
