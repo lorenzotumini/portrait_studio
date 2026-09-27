@@ -91,6 +91,12 @@ class GreenScreenWorkflowTests(unittest.TestCase):
         self.assertEqual(api["208"]["inputs"]["image"], ["101", 0])
         self.assertEqual(api["211"]["inputs"]["image"], ["208", 0])
         self.assertEqual(api["213"]["inputs"]["keyed_image"], ["211", 0])
+        self.assertEqual(api["213"]["inputs"]["original_image"], ["156", 0])
+        for node_id, node in api.items():
+            for input_name, value in node["inputs"].items():
+                if (isinstance(value, list) and len(value) == 2
+                        and isinstance(value[0], str) and isinstance(value[1], int)):
+                    self.assertIn(value[0], api, f"{node_id}.{input_name} refers to missing node {value[0]}")
         self.assertEqual(api["213"]["inputs"]["mode"], "auto")
         self.assertEqual(api["212"]["inputs"], {"image": ["213", 0], "alpha": ["100", 0]})
         self.assertEqual(api["46"]["inputs"]["image"], ["212", 0])
