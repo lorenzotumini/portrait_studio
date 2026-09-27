@@ -14,7 +14,7 @@ def linear_to_srgb(rgb):
     return torch.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * rgb.clamp_min(0).pow(1 / 2.4) - 0.055).clamp(0, 1)
 
 
-def face_levels(image, mask, detector):
+def face_levels(image, mask, detector, label="portrait"):
     height, width = image.shape[:2]
     if tuple(mask.shape) != (height, width):
         raise ValueError("Portrait exposure: image and foreground mask must have matching dimensions.")
@@ -24,14 +24,20 @@ def face_levels(image, mask, detector):
     alpha = cv2.resize(mask.detach().cpu().numpy(), size, interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(np.clip(rgb * 255, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
     faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(48, 48))
+    if len(faces) == 0:
+        # Improve detection contrast only; measure exposure from the original RGB.
+        faces = detector.detectMultiScale(cv2.equalizeHist(gray), scaleFactor=1.1, minNeighbors=6, minSize=(48, 48))
+    detected = len(faces)
     faces = [box for box in faces if alpha[box[1]:box[1] + box[3], box[0]:box[0] + box[2]].mean() > 0.75]
     if len(faces) != 1:
+        logging.warning("Portrait exposure skipped: %s has %d detected face(s), %d inside the foreground mask; expected one. Exposure and contrast unchanged.", label, detected, len(faces))
         return None
     x, y, w, h = faces[0]
     yy, xx = np.ogrid[:size[1], :size[0]]
     oval = ((xx - x - w * 0.5) / (w * 0.33)) ** 2 + ((yy - y - h * 0.54) / (h * 0.38)) ** 2 < 1
     pixels = rgb[oval & (alpha > 0.98)]
     if len(pixels) < 64:
+        logging.warning("Portrait exposure skipped: %s face has too few opaque foreground pixels. Exposure and contrast unchanged; check its mask.", label)
         return None
     linear = np.where(pixels <= 0.04045, pixels / 12.92, ((pixels + 0.055) / 1.055) ** 2.4)
     luminance = linear @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -104,7 +110,7 @@ class PortraitExposureMatch:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "match"
     CATEGORY = "image/portrait"
-    DESCRIPTION = "Match facial exposure and optionally contrast to one reference portrait in linear RGB, preserving channel ratios and alpha. No face or multiple faces in the source leaves it unchanged. Clipped detail cannot be recovered."
+    DESCRIPTION = "Match facial exposure and optionally contrast to one reference portrait in linear RGB, preserving channel ratios and alpha. Unreliable face detection in the source or reference skips matching with a warning. Clipped detail cannot be recovered."
 
     def match(self, image, mask, reference_image, reference_mask, strength, contrast_strength, max_exposure_stops):
         return match_reference(image, mask, reference_image, reference_mask, strength, strength * contrast_strength, strength * max_exposure_stops, strength * max_exposure_stops)
@@ -127,7 +133,7 @@ class PortraitExposureMatchV3:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "match"
     CATEGORY = "image/portrait"
-    DESCRIPTION = "Match facial exposure and contrast independently. Brightening/darkening limits cap the exposure shift after strength; contrast pivots around the facial median. Zero exposure strength keeps that median without matching reference brightness. Both strengths at zero bypass correction. Reference selection is manual."
+    DESCRIPTION = "Match facial exposure and contrast independently. Brightening/darkening limits cap the exposure shift after strength; contrast pivots around the facial median. Zero exposure strength keeps that median without matching reference brightness. Both strengths at zero bypass correction. Unreliable source or reference face detection skips matching with a warning. Reference selection is manual."
 
     def match(self, image, mask, reference_image, reference_mask, exposure_strength, contrast_strength, max_brightening_stops, max_darkening_stops):
         return match_reference(image, mask, reference_image, reference_mask, exposure_strength, contrast_strength, max_brightening_stops, max_darkening_stops)
@@ -137,14 +143,13 @@ def match_reference(image, mask, reference_image, reference_mask, exposure_stren
     if exposure_strength == 0 and contrast_strength == 0:
         return (image,)
     detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    ref = face_levels(reference_image[0], reference_mask[0], detector)
+    ref = face_levels(reference_image[0], reference_mask[0], detector, label="reference")
     if ref is None:
-        raise ValueError("Portrait exposure: choose a reference with one clear frontal face and a matching foreground mask.")
+        return (image,)
     results = []
     for b, frame in enumerate(image):
-        source = face_levels(frame, mask[min(b, len(mask) - 1)], detector)
+        source = face_levels(frame, mask[min(b, len(mask) - 1)], detector, label=f"portrait {b + 1}")
         if source is None:
-            logging.warning("Portrait exposure skipped: use a portrait with one clear frontal face.")
             results.append(frame)
             continue
         ev = float(np.clip(exposure_strength * np.log2(ref[1] / source[1]), -max_darkening_stops, max_brightening_stops))
@@ -181,6 +186,56 @@ def has_green_screen(image, mask):
     hues = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[..., 0][background & green]
     low, middle, high = np.quantile(hues, [0.25, 0.5, 0.75])
     return bool(75 <= middle <= 155 and high - low <= 20)
+
+
+
+
+class PortraitChromaKeyGate:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "image": ("IMAGE",),
+            "original_image": ("IMAGE",),
+            "mask": ("MASK",),
+            "keyed_image": ("IMAGE", {"lazy": True}),
+            "mode": (["auto", "off", "force green"],),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    FUNCTION = "select"
+    CATEGORY = "image/portrait"
+    DESCRIPTION = "Run VNCCS only when a green screen is detected. Auto skips VNCCS for non-green photos; off always skips it; force green always runs it. Reattach the ViTMatte alpha downstream."
+
+    def _should_key(self, original_image, mask, mode):
+        if mode not in ("auto", "off", "force green"):
+            raise ValueError("Portrait chroma key: mode must be auto, off, or force green.")
+        if mode == "off":
+            return [False] * len(original_image)
+        if mode == "force green":
+            return [True] * len(original_image)
+        if original_image.shape[1:3] != mask.shape[-2:]:
+            raise ValueError("Portrait chroma key: original photo and mask must have matching dimensions.")
+        return [has_green_screen(frame, mask[min(i, len(mask) - 1)])
+                for i, frame in enumerate(original_image)]
+
+    def check_lazy_status(self, image, original_image, mask, mode, keyed_image=None):
+        if keyed_image is None and any(self._should_key(original_image, mask, mode)):
+            return ["keyed_image"]
+        return []
+
+    def select(self, image, original_image, mask, mode, keyed_image=None):
+        decisions = self._should_key(original_image, mask, mode)
+        if not any(decisions):
+            return (image[..., :3],)
+        if keyed_image is None:
+            raise ValueError("Portrait chroma key: connect the VNCCS image output.")
+        if image.shape[:3] != keyed_image.shape[:3]:
+            raise ValueError("Portrait chroma key: base and VNCCS images must have matching dimensions.")
+        return (torch.stack([
+            keyed_image[i, ..., :3] if active else image[i, ..., :3]
+            for i, active in enumerate(decisions)
+        ]),)
 
 
 class PortraitGreenSpill:
@@ -238,10 +293,12 @@ NODE_CLASS_MAPPINGS = {
     "PortraitExposureMatch": PortraitExposureMatch,
     "PortraitExposureMatchV3": PortraitExposureMatchV3,
     "PortraitGreenSpill": PortraitGreenSpill,
+    "PortraitChromaKeyGate": PortraitChromaKeyGate,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PortraitMatteFrame": "Portrait: Frame from Matte",
     "PortraitExposureMatch": "Portrait: Match Reference Exposure",
     "PortraitExposureMatchV3": "Portrait: Match Reference Exposure V3",
     "PortraitGreenSpill": "Portrait: Green Spill Cleanup",
+    "PortraitChromaKeyGate": "Portrait: Auto VNCCS on Green Screens",
 }

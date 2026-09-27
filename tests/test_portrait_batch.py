@@ -79,5 +79,42 @@ class InputConversionTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"result")
 
 
+
+
+class GreenScreenWorkflowTests(unittest.TestCase):
+    def test_ui_and_api_route_rgb_through_lazy_gate_and_restore_vitmatte_alpha(self):
+        import json
+        ui = json.loads((batch.PROJECT_DIR / "workflow/portrait_master_pipeline_v3.json").read_text())
+        api = batch.load_workflow(batch.DEFAULT_WORKFLOW)
+        nodes = {n["id"]: n for n in ui["nodes"]}
+        links = {link[0]: link for link in ui["links"]}
+        self.assertEqual(api["208"]["inputs"]["image"], ["101", 0])
+        self.assertEqual(api["211"]["inputs"]["image"], ["208", 0])
+        self.assertEqual(api["213"]["inputs"]["keyed_image"], ["211", 0])
+        self.assertEqual(api["213"]["inputs"]["mode"], "auto")
+        self.assertEqual(api["212"]["inputs"], {"image": ["213", 0], "alpha": ["100", 0]})
+        self.assertEqual(api["46"]["inputs"]["image"], ["212", 0])
+        self.assertEqual(api["209"]["inputs"]["mask"], ["208", 1])
+        for lid, source, output, target, input_, _ in links.values():
+            self.assertIn(lid, nodes[source]["outputs"][output]["links"])
+            self.assertEqual(nodes[target]["inputs"][input_]["link"], lid)
+        self.assertEqual(nodes[213]["widgets_values"], ["auto"])
+
+    def test_batch_spill_mode_controls_vnccs_gate_and_existing_despill(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for mode in ("auto", "off", "force green"):
+                args = argparse.Namespace(**{**batch.DEFAULTS, "spill_mode": mode},
+                                          raw_cache_dir=str(root), center_subject=True, cutout=False)
+                with patch.object(batch, "upload_image", return_value="input.png"), \
+                        patch.object(batch, "queue_workflow", return_value={"final": {"filename": "out.png"}}) as queue, \
+                        patch.object(batch, "comfy_request", return_value=b"result"):
+                    batch.process_pair("http://unused", batch.DEFAULT_WORKFLOW, root / "portrait.png",
+                                       root / "bg.png", None, args, root / "out.png")
+                workflow = queue.call_args.args[1]
+                self.assertEqual(workflow["203"]["inputs"]["mode"], mode)
+                self.assertEqual(workflow["213"]["inputs"]["mode"], mode)
+
+
 if __name__ == "__main__":
     unittest.main()

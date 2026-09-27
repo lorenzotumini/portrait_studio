@@ -12,17 +12,22 @@ Portrait workflow based on ComfyUI with a dedicated CLI batch tool.
 
 2. Through Manager, install **ComfyUI LayerStyle**, **ComfyUI-KJNodes**, and **VNCCS – Visual Novel Character Creation Suite**. KJNodes provides the UI workflow's Set/Get nodes.
 
-3. Stop ComfyUI and copy only `custom_nodes/portrait_tools` from this repo into `ComfyUI/custom_nodes/`. After the Manager installations finish, reinstall OpenCV contrib using ComfyUI's Python environment so its `cv2` files take precedence:
-
-   ```bash
-   python -m pip install --force-reinstall --no-deps opencv-contrib-python==4.14.0.94
-   ```
-
-   For Windows Portable, replace `python` with `.\python_embeded\python.exe` and run from the portable root. For a uv-managed environment without pip, use `uv pip install --python /path/to/ComfyUI/.venv/bin/python --reinstall --no-deps opencv-contrib-python==4.14.0.94`.
+3. Stop ComfyUI and copy `custom_nodes/portrait_tools` from this repo into `ComfyUI/custom_nodes/`. Its PyTorch, NumPy, and OpenCV imports are provided by ComfyUI and the installed node dependencies; there is no separate `portrait_tools` requirements file.
 
 4. Restart ComfyUI and open `workflow/portrait_master_pipeline_v3.json`. Use missing-model download links where offered, or download the [model files](MODELS.md) into the specified folders under ComfyUI's configured `models/` directory. Restart ComfyUI after adding model files.
 
 5. Select portrait, background, and reference images, then run the workflow. The portrait itself can also serve as the reference.
+
+> [!WARNING]
+> **Run this repair if startup reports `Cannot import name 'guidedFilter' from cv2.ximgproc`.** OpenCV's standard, headless, and contrib packages share the `cv2` module, so installing another variant can overwrite contrib's `guidedFilter`.
+>
+> Stop ComfyUI, then reinstall contrib using ComfyUI's Python:
+>
+> ```bash
+> python -m pip install --force-reinstall --no-deps opencv-contrib-python==4.14.0.94
+> ```
+>
+> For Windows Portable, use `python_embeded\python.exe` from the portable root. Restart ComfyUI after the reinstall.
 
 ## Run a batch
 
@@ -58,6 +63,8 @@ The script writes files such as `portrait_name__background_name.png` to the outp
 
 Add multiple backgrounds by listing them after `--backgrounds`, or by passing a folder containing them. An optional reference portrait for color correction can be supplied with `--reference`; when omitted, the portrait itself is used as the reference. Existing results are preserved with a numeric suffix instead of being overwritten.
 
+When exposure or contrast matching is enabled, the portrait and reference each need one measurable face. If face detection or foreground-mask coverage is insufficient, the script logs the reason and skips matching for that image; the rest of the workflow continues. Both matching strengths default to zero.
+
 Add `--cutout` to also save each portrait without a background as `portrait_name__cutout.png` (PNG with transparent alpha). The cutout is the color-corrected matte result from before the background composite. It depends only on the portrait and the reference, so each portrait produces a single cutout shared across all of its background combinations; a rerun skips cutouts that already exist on disk.
 
 The defaults are defined near the top of `portrait_batch.py` and can also be overridden for a run. For example:
@@ -68,6 +75,12 @@ python portrait_batch.py --portraits ./originals --backgrounds ./blue.png ./gray
   --aspect-width 1 --aspect-height 1 --no-background-upscale \
   --spill-strength 0.75
 ```
+
+## Green-screen cleanup
+
+The workflow runs BiRefNet and ViTMatte to create the foreground mask, then uses PixelSpread and Portrait Green Spill Cleanup to improve edge colors. VNCCS Chroma Key receives the cutout before exposure matching. Its corrected RGB is kept, but its alpha is discarded and the original ViTMatte alpha is restored. VNCCS's separate **matte** output is preview-only; the final composite still uses ViTMatte's mask. This avoids letting VNCCS remove green objects such as flags.
+
+`--spill-mode auto` is the batch default. It applies spill cleanup only when a green screen is detected and lazily skips VNCCS processing when none is detected. `--spill-mode off` bypasses both; `--spill-mode "force green"` applies both to every image. `--spill-strength` adjusts Portrait Green Spill Cleanup; VNCCS has separate settings in the workflow. Matting and PixelSpread run in every mode. In the ComfyUI UI, set the same mode on **Portrait: Green Spill Cleanup** and **Portrait: Auto VNCCS on Green Screens**.
 
 ## RAW and HEIC/HEIF files
 
@@ -85,4 +98,4 @@ The batch tool uses only Python's standard library. Apple Silicon can run the sa
 
 ## Updating the workflow
 
-Make and test graph changes in ComfyUI, save the UI workflow and export its API version, then replace both files in `workflow/`. Keep the node IDs used by `portrait_batch.py` (`120`, `125`, `156`, `141:25`, `160:25`, `180`, `203`, `46`, `147`, and `207` for `--cutout`) stable, or update the corresponding mappings in the script together with the workflow. Node `147` provides the final image; node `207` is a `PreviewImage` wired to node `46` for the transparent cutout.
+For layout-only changes, save the UI workflow to `workflow/portrait_master_pipeline_v3.json`; the batch API workflow does not contain node positions. For graph changes, test and update both workflow files. Keep the node IDs used by `portrait_batch.py` (`120`, `125`, `156`, `141:25`, `160:25`, `180`, `203`, `208`, `211`, `212`, `213`, `46`, `147`, and `207` for `--cutout`) stable, or update the script with them. Node `147` provides the final image; node `207` previews node `46` for the transparent cutout. Node `208` is VNCCS, node `213` gates VNCCS based on `--spill-mode`, and node `209` previews its matte.

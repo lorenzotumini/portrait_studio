@@ -32,7 +32,7 @@ DEFAULTS = {
     "contrast_strength": 0.0, # 0.2
     "max_brightening_stops": 0.0, # 0.5,
     "max_darkening_stops": 0.0, # 2.0,
-    "spill_mode": "force green",
+    "spill_mode": "auto",
     "spill_strength": 0.9,
     "spill_edge_width": 35,
 }
@@ -137,9 +137,9 @@ def convert_input_image(path: Path, cache_dir: Path) -> Path:
 
 def load_workflow(path: Path, require_cutout: bool = False) -> dict:
     workflow = json.loads(path.read_text())
-    required = {"120", "125", "156", "180", "203", "46", "141:25", "160:25", "147"}
+    required = {"120", "125", "156", "180", "203", "208", "211", "212", "213", "46", "141:25", "160:25", "147"}
     if require_cutout:
-        # Node 207 is a PreviewImage fed by node 46 (the color-corrected, transparent-background cutout).
+        # Node 207 previews the color-corrected transparent cutout (46).
         required.add("207")
     missing = required.difference(workflow)
     if missing:
@@ -255,7 +255,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--contrast-strength", type=float, default=DEFAULTS["contrast_strength"])
     parser.add_argument("--max-brightening-stops", type=float, default=DEFAULTS["max_brightening_stops"])
     parser.add_argument("--max-darkening-stops", type=float, default=DEFAULTS["max_darkening_stops"])
-    parser.add_argument("--spill-mode", choices=("auto", "off", "force green"), default=DEFAULTS["spill_mode"])
+    parser.add_argument("--spill-mode", choices=("auto", "off", "force green"), default=DEFAULTS["spill_mode"],
+                        help="Skip VNCCS and spill cleanup when no green screen is detected (default: %(default)s).")
     parser.add_argument("--spill-strength", type=float, default=DEFAULTS["spill_strength"])
     parser.add_argument("--spill-edge-width", type=int, default=DEFAULTS["spill_edge_width"])
     parser.add_argument("--cutout", action="store_true", default=False,
@@ -300,6 +301,7 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
     set_widget(workflow, "156", "aspect_height", args.aspect_height)
     set_widget(workflow, "156", "center_subject", args.center_subject)
     set_widget(workflow, "203", "mode", args.spill_mode)
+    set_widget(workflow, "213", "mode", args.spill_mode)
     set_widget(workflow, "203", "strength", args.spill_strength)
     set_widget(workflow, "203", "edge_width", args.spill_edge_width)
     set_widget(workflow, "46", "exposure_strength", args.exposure_strength)

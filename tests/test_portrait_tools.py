@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -81,6 +81,42 @@ class GreenSpillTests(unittest.TestCase):
             self.node.despill(self.foreground, self.original, self.mask[:, :64], "auto", 1, 12)
 
 
+
+
+class ChromaKeyGateTests(unittest.TestCase):
+    def setUp(self):
+        self.mask = torch.zeros(1, 64, 64)
+        self.mask[:, 16:48, 16:48] = 1
+        self.screen = torch.full((1, 64, 64, 3), 0.3)
+        self.screen[:] = torch.tensor([0.1, 0.6, 0.1])
+        self.screen[:, 16:48, 16:48] = 0.3
+        self.gray = torch.full_like(self.screen, 0.3)
+        self.base = self.screen.clone()
+        self.keyed = torch.full_like(self.base, 0.2)
+        self.node = portrait.PortraitChromaKeyGate()
+
+    def test_auto_requests_vnccs_only_for_detected_green(self):
+        self.assertEqual(self.node.check_lazy_status(self.base, self.gray, self.mask, "auto"), [])
+        self.assertEqual(self.node.check_lazy_status(self.base, self.screen, self.mask, "auto"),
+                         ["keyed_image"])
+
+    def test_off_skips_and_force_green_runs_vnccs(self):
+        self.assertEqual(self.node.check_lazy_status(self.base, self.screen, self.mask, "off"), [])
+        self.assertEqual(self.node.check_lazy_status(self.base, self.gray, self.mask, "force green"),
+                         ["keyed_image"])
+        self.assertTrue(torch.equal(self.node.select(self.base, self.screen, self.mask, "off")[0], self.base))
+        self.assertTrue(torch.equal(self.node.select(self.base, self.gray, self.mask, "force green", self.keyed)[0],
+                                    self.keyed))
+
+    def test_mixed_batch_bypasses_keying_for_non_green_frames(self):
+        original = torch.cat((self.screen, self.gray))
+        base = original.clone()
+        keyed = torch.full_like(base, 0.2)
+        result, = self.node.select(base, original, self.mask, "auto", keyed)
+        self.assertTrue(torch.equal(result[0], keyed[0]))
+        self.assertTrue(torch.equal(result[1], base[1]))
+
+
 class ExposureTests(unittest.TestCase):
     def setUp(self):
         self.linear = torch.tensor([0.025, 0.05, 0.1, 0.2, 0.4]).view(1, 1, 5, 1).expand(-1, -1, -1, 3)
@@ -116,6 +152,17 @@ class ExposureTests(unittest.TestCase):
         with patch.object(portrait, "face_levels", side_effect=[self.source, None]):
             out = self.node.match(self.image, self.mask, self.image, self.mask, 1, 1, 0.5, 2)[0]
         self.assertTrue(torch.equal(out, self.image))
+
+    def test_unrecognized_reference_bypasses_entire_batch_and_preserves_alpha(self):
+        rgba = torch.cat((self.image, self.mask.unsqueeze(-1)), dim=-1).repeat(2, 1, 1, 1)
+        with patch.object(portrait, "face_levels", return_value=None) as measure:
+            out, = self.node.match(rgba, self.mask, self.image, self.mask, 1, 1, 0.5, 2)
+        self.assertIs(out, rgba)
+        self.assertEqual(measure.call_count, 1)
+
+    def test_reference_dimension_mismatch_still_reports_wiring_error(self):
+        with self.assertRaisesRegex(ValueError, "matching dimensions"):
+            self.node.match(self.image, self.mask, self.image, self.mask[:, :, :2], 1, 1, 0.5, 2)
 
     def test_legacy_settings_map_to_same_v3_transform(self):
         ref = np.array([0.08, 0.3, 0.7])

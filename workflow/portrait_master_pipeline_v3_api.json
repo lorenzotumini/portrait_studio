@@ -365,7 +365,7 @@
         "class_type": "PreviewImage",
         "inputs": {
             "images": [
-                "101",
+                "208",
                 0
             ]
         }
@@ -419,7 +419,7 @@
             "max_brightening_stops": 0.5,
             "max_darkening_stops": 2,
             "image": [
-                "101",
+                "212",
                 0
             ],
             "mask": [
@@ -472,6 +472,80 @@
                 "46",
                 0
             ]
+        }
+    },
+    "208": {
+        "class_type": "VNCCSChromaKey",
+        "inputs": {
+            "image": [
+                "101",
+                0
+            ],
+            "tolerance": 0.11,
+            "softness": 0.1,
+            "despill_strength": 0.8,
+            "edge_width": 3,
+            "matte_cleanup": 0.1,
+            "foreground_recover": 0.35,
+            "edge_decontaminate": 0.75,
+            "edge_choke": 0.08,
+            "matte_method": "pymatting_if_available",
+            "screen_mode": "green",
+            "output_mode": "straight_rgba",
+            "use_sam3_recovery_mask": false
+        }
+    },
+    "209": {
+        "class_type": "MaskPreview",
+        "inputs": {
+            "mask": [
+                "208",
+                1
+            ]
+        }
+    },
+    "211": {
+        "class_type": "SplitImageWithAlpha",
+        "inputs": {
+            "image": [
+                "208",
+                0
+            ]
+        }
+    },
+    "212": {
+        "class_type": "JoinImageWithAlpha",
+        "inputs": {
+            "image": [
+                "213",
+                0
+            ],
+            "alpha": [
+                "100",
+                0
+            ]
+        }
+    },
+    "213": {
+        "class_type": "PortraitChromaKeyGate",
+        "inputs": {
+            "image": [
+                "101",
+                0
+            ],
+            "original_image": [
+                "200",
+                0
+            ],
+            "mask": [
+                "157",
+                1
+            ],
+            "keyed_image": [
+                "211",
+                0
+            ],
+            "mode": "auto"
         }
     }
 }
