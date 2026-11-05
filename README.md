@@ -78,6 +78,8 @@ python portrait_batch.py --portraits ./originals --backgrounds ./blue.png ./gray
 
 ## Green-screen cleanup
 
+For an independent CorridorKey 2.0 experiment, open `workflow/portrait_corridorkey_test.json` and follow the [test setup instructions](workflow/CORRIDORKEY_TEST.md). It uses a separate optional custom node and external Python environment; the main workflows and batch tool are unchanged.
+
 The workflow runs BiRefNet and ViTMatte to create the foreground mask, then uses PixelSpread and Portrait Green Spill Cleanup to improve edge colors. VNCCS Chroma Key receives the cutout before exposure matching. Its corrected RGB is kept, but its alpha is discarded and the original ViTMatte alpha is restored. VNCCS's separate **matte** output is preview-only; the final composite still uses ViTMatte's mask. This avoids letting VNCCS remove green objects such as flags.
 
 `--spill-mode auto` is the batch default. It applies spill cleanup only when a green screen is detected and lazily skips VNCCS processing when none is detected. `--spill-mode off` bypasses both; `--spill-mode "force green"` applies both to every image. `--spill-strength` adjusts Portrait Green Spill Cleanup; VNCCS has separate settings in the workflow. Matting and PixelSpread run in every mode. In the ComfyUI UI, set the same mode on **Portrait: Green Spill Cleanup** and **Portrait: Auto VNCCS on Green Screens**.
