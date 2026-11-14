@@ -29,7 +29,9 @@ class PortraitCorridorKeyTest:
     def key(self, image, repository_path, python_executable, despill_strength, max_long_edge):
         import comfy.model_management as mm
         repo = Path(repository_path).expanduser().resolve()
-        python = Path(python_executable).expanduser().resolve()
+        # Preserve virtualenv executable symlinks: resolving them bypasses the
+        # environment's pyvenv.cfg and launches the base Python instead.
+        python = Path(os.path.abspath(os.path.expanduser(python_executable)))
         if not (repo / "infer.py").is_file():
             raise ValueError("CorridorKey: repository_path must contain the official infer.py.")
         if not python.is_file():
