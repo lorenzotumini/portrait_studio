@@ -50,6 +50,7 @@ RAW_EXTENSIONS = {
 INPUT_EXTENSIONS = IMAGE_EXTENSIONS | RAW_EXTENSIONS | HEIF_EXTENSIONS
 PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_WORKFLOW = PROJECT_DIR / "workflow" / "portrait_master_pipeline_v3_api.json"
+CORRIDOR_WORKFLOW = PROJECT_DIR / "workflow" / "portrait_corridorkey_pipeline_api.json"
 
 
 def comfy_request(base_url: str, path: str, data: bytes | None = None, method: str = "GET", headers: dict[str, str] | None = None) -> bytes:
@@ -135,9 +136,10 @@ def convert_input_image(path: Path, cache_dir: Path) -> Path:
     return dest
 
 
-def load_workflow(path: Path, require_cutout: bool = False) -> dict:
+def load_workflow(path: Path, require_cutout: bool = False, model: str = "standard") -> dict:
     workflow = json.loads(path.read_text())
-    required = {"120", "125", "156", "180", "203", "208", "211", "212", "213", "46", "141:25", "160:25", "147"}
+    required = {"120", "125", "156", "180", "46", "141:25", "160:25", "147"}
+    required |= {"214"} if model == "corridor" else {"203", "208", "211", "212", "213"}
     if require_cutout:
         # Node 207 previews the color-corrected transparent cutout (46).
         required.add("207")
@@ -245,7 +247,13 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--backgrounds", required=True, nargs="+", help="One or more background files or folders.")
     parser.add_argument("--output", default="portrait_results", help="Output folder; defaults to ./portrait_results.")
     parser.add_argument("--reference", help="Optional reference portrait. If omitted, the input portrait is used.")
-    parser.add_argument("--workflow", default=str(DEFAULT_WORKFLOW), help=argparse.SUPPRESS)
+    parser.add_argument("--workflow", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--model", choices=("standard", "corridor"), default="standard", help="Matting workflow (default: standard).")
+    parser.add_argument("--corridor-repo", default=os.environ.get("CORRIDORKEY_REPO"), help="CorridorKey repository path on the ComfyUI server (or CORRIDORKEY_REPO).")
+    parser.add_argument("--corridor-python", default=os.environ.get("CORRIDORKEY_PYTHON"), help="CorridorKey environment Python on the ComfyUI server (or CORRIDORKEY_PYTHON).")
+    parser.add_argument("--corridor-low-vram", action="store_true", help="Use lower-memory CorridorKey inference; recommended for 8 GB GPUs.")
+    parser.add_argument("--corridor-max-long-edge", type=int, default=0, help="Limit CorridorKey inference long edge in pixels; 0 uses native framed resolution (default).")
+    parser.add_argument("--corridor-despill", type=float, default=0.5, help="CorridorKey despill strength, 0 to 1 (default: 0.5).")
     parser.add_argument("--comfy-url", nargs="+", default=[os.environ.get("COMFY_URL", "http://127.0.0.1:8188")],
                         help="One or more ComfyUI URLs (one per GPU). Jobs are processed in parallel, "
                              "one worker per instance. Defaults to $COMFY_URL or http://127.0.0.1:8188.")
@@ -277,7 +285,8 @@ def arguments() -> argparse.Namespace:
 def process_pair(base_url: str, workflow_path: Path, portrait: Path, background: Path,
                  reference: Path | None, args: argparse.Namespace, target: Path,
                  cutout_target: Path | None = None) -> Path:
-    workflow = load_workflow(workflow_path, require_cutout=args.cutout)
+    model = getattr(args, "model", "standard")
+    workflow = load_workflow(workflow_path, require_cutout=args.cutout, model=model)
     raw_cache = Path(args.raw_cache_dir).expanduser()
 
     def stage(path: Path) -> Path:
@@ -300,10 +309,16 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
     set_widget(workflow, "156", "aspect_width", args.aspect_width)
     set_widget(workflow, "156", "aspect_height", args.aspect_height)
     set_widget(workflow, "156", "center_subject", args.center_subject)
-    set_widget(workflow, "203", "mode", args.spill_mode)
-    set_widget(workflow, "213", "mode", args.spill_mode)
-    set_widget(workflow, "203", "strength", args.spill_strength)
-    set_widget(workflow, "203", "edge_width", args.spill_edge_width)
+    if model == "corridor":
+        for key, value in (("repository_path", args.corridor_repo), ("python_executable", args.corridor_python),
+                           ("low_vram", args.corridor_low_vram), ("max_long_edge", args.corridor_max_long_edge),
+                           ("despill_strength", args.corridor_despill)):
+            set_widget(workflow, "214", key, value)
+    else:
+        set_widget(workflow, "203", "mode", args.spill_mode)
+        set_widget(workflow, "213", "mode", args.spill_mode)
+        set_widget(workflow, "203", "strength", args.spill_strength)
+        set_widget(workflow, "203", "edge_width", args.spill_edge_width)
     set_widget(workflow, "46", "exposure_strength", args.exposure_strength)
     set_widget(workflow, "46", "contrast_strength", args.contrast_strength)
     set_widget(workflow, "46", "max_brightening_stops", args.max_brightening_stops)
@@ -326,6 +341,13 @@ def process_pair(base_url: str, workflow_path: Path, portrait: Path, background:
 
 def main() -> int:
     args = arguments()
+    if args.model == "corridor":
+        if not args.corridor_repo or not args.corridor_python:
+            raise ValueError("CorridorKey requires --corridor-repo and --corridor-python (paths on each ComfyUI server).")
+        if not 0 <= args.corridor_despill <= 1 or not 0 <= args.corridor_max_long_edge <= 32768:
+            raise ValueError("CorridorKey despill must be 0–1 and max long edge must be 0–32768.")
+    if args.workflow is None:
+        args.workflow = str(CORRIDOR_WORKFLOW if args.model == "corridor" else DEFAULT_WORKFLOW)
     base_urls = []
     for url in args.comfy_url:
         normalized_url = url.rstrip("/")

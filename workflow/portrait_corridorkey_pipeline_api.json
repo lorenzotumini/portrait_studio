@@ -1,0 +1,419 @@
+{
+  "125": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "background_input.png"
+    }
+  },
+  "184": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "33",
+        0
+      ],
+      "image": [
+        "120",
+        0
+      ]
+    }
+  },
+  "33": {
+    "class_type": "LoadBackgroundRemovalModel",
+    "inputs": {
+      "bg_removal_name": "birefnet-portrait.safetensors"
+    }
+  },
+  "139": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 2048
+    }
+  },
+  "142": {
+    "class_type": "UpscaleModelLoader",
+    "inputs": {
+      "model_name": "RealESRGAN_x2plus.pth"
+    }
+  },
+  "122": {
+    "class_type": "ResizeImageMaskNode",
+    "inputs": {
+      "resize_type": "scale dimensions",
+      "resize_type.width": [
+        "148",
+        0
+      ],
+      "resize_type.height": [
+        "148",
+        1
+      ],
+      "resize_type.crop": "center",
+      "scale_method": "lanczos",
+      "input": [
+        "160:24",
+        0
+      ]
+    }
+  },
+  "196": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "156",
+        0
+      ]
+    }
+  },
+  "148": {
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "196",
+        0
+      ]
+    }
+  },
+  "156": {
+    "class_type": "PortraitMatteFrame",
+    "inputs": {
+      "center_subject": true,
+      "side_margin": 0.02,
+      "aspect_width": 4,
+      "aspect_height": 5,
+      "image": [
+        "120",
+        0
+      ],
+      "mask": [
+        "184",
+        0
+      ]
+    }
+  },
+  "52": {
+    "class_type": "LayerUtility: ImageBlendAdvance V3",
+    "inputs": {
+      "invert_mask": false,
+      "blend_mode": "normal",
+      "opacity": 100,
+      "x_percent": 50,
+      "y_percent": 50,
+      "mirror": "None",
+      "scale": 1,
+      "aspect_ratio": 1,
+      "rotate": 0,
+      "transform_method": "lanczos",
+      "anti_aliasing": 0,
+      "layer_image": [
+        "46",
+        0
+      ],
+      "background_image": [
+        "122",
+        0
+      ],
+      "layer_mask": [
+        "217",
+        0
+      ]
+    }
+  },
+  "153": {
+    "class_type": "SplitImageWithAlpha",
+    "inputs": {
+      "image": [
+        "52",
+        0
+      ]
+    }
+  },
+  "141:21": {
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "153",
+        0
+      ]
+    }
+  },
+  "141:22": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "expression": "d and min(a, b) < c",
+      "values.a": [
+        "141:21",
+        0
+      ],
+      "values.b": [
+        "141:21",
+        1
+      ],
+      "values.c": [
+        "139",
+        0
+      ],
+      "values.d": [
+        "141:25",
+        0
+      ]
+    }
+  },
+  "141:23": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {
+      "upscale_model": [
+        "142",
+        0
+      ],
+      "image": [
+        "153",
+        0
+      ]
+    }
+  },
+  "141:24": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "switch": [
+        "141:22",
+        2
+      ],
+      "on_false": [
+        "153",
+        0
+      ],
+      "on_true": [
+        "141:23",
+        0
+      ]
+    }
+  },
+  "141:25": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": true
+    }
+  },
+  "154": {
+    "class_type": "LayerFilter: AddGrain",
+    "inputs": {
+      "grain_power": 0.15,
+      "grain_scale": 0.5,
+      "grain_sat": 1,
+      "image": [
+        "98",
+        0
+      ]
+    }
+  },
+  "147": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "154",
+        0
+      ]
+    }
+  },
+  "98": {
+    "class_type": "ImageSharpen",
+    "inputs": {
+      "sharpen_radius": 1,
+      "sigma": 0.15,
+      "alpha": 0.16,
+      "image": [
+        "141:24",
+        0
+      ]
+    }
+  },
+  "160:21": {
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "125",
+        0
+      ]
+    }
+  },
+  "160:22": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "expression": "d and min(a, b) < c",
+      "values.a": [
+        "160:21",
+        0
+      ],
+      "values.b": [
+        "160:21",
+        1
+      ],
+      "values.c": [
+        "139",
+        0
+      ],
+      "values.d": [
+        "160:25",
+        0
+      ]
+    }
+  },
+  "160:23": {
+    "class_type": "ImageUpscaleWithModel",
+    "inputs": {
+      "upscale_model": [
+        "142",
+        0
+      ],
+      "image": [
+        "125",
+        0
+      ]
+    }
+  },
+  "160:24": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "switch": [
+        "160:22",
+        2
+      ],
+      "on_false": [
+        "125",
+        0
+      ],
+      "on_true": [
+        "160:23",
+        0
+      ]
+    }
+  },
+  "160:25": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": true
+    }
+  },
+  "120": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "portrait_input.png"
+    }
+  },
+  "180": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "reference_input.png"
+    }
+  },
+  "202": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "33",
+        0
+      ],
+      "image": [
+        "180",
+        0
+      ]
+    }
+  },
+  "46": {
+    "class_type": "PortraitExposureMatchV3",
+    "inputs": {
+      "exposure_strength": 0.8,
+      "contrast_strength": 0.2,
+      "max_brightening_stops": 0.5,
+      "max_darkening_stops": 2,
+      "image": [
+        "216",
+        0
+      ],
+      "mask": [
+        "217",
+        0
+      ],
+      "reference_image": [
+        "180",
+        0
+      ],
+      "reference_mask": [
+        "202",
+        0
+      ]
+    }
+  },
+  "207": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "46",
+        0
+      ]
+    }
+  },
+  "214": {
+    "class_type": "PortraitCorridorKeyBatch",
+    "inputs": {
+      "image": [
+        "156",
+        0
+      ],
+      "repository_path": "",
+      "python_executable": "",
+      "despill_strength": 0.5,
+      "max_long_edge": 0,
+      "low_vram": false
+    }
+  },
+  "215": {
+    "class_type": "InvertMask",
+    "inputs": {
+      "mask": [
+        "217",
+        0
+      ]
+    }
+  },
+  "216": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "214",
+        0
+      ],
+      "alpha": [
+        "215",
+        0
+      ]
+    }
+  },
+  "34": {
+    "class_type": "RemoveBackground",
+    "inputs": {
+      "bg_removal_model": [
+        "33",
+        0
+      ],
+      "image": [
+        "156",
+        0
+      ]
+    }
+  },
+  "217": {
+    "class_type": "PortraitCorridorSubjectMask",
+    "inputs": {
+      "alpha": [
+        "214",
+        1
+      ],
+      "subject_mask": [
+        "34",
+        0
+      ]
+    }
+  }
+}

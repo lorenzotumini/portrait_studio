@@ -78,9 +78,19 @@ python portrait_batch.py --portraits ./originals --backgrounds ./blue.png ./gray
 
 ## Green-screen cleanup
 
-For an independent CorridorKey 2.0 experiment, open `workflow/portrait_corridorkey_test.json` and follow the [test setup instructions](workflow/CORRIDORKEY_TEST.md). It uses a separate optional custom node and external Python environment; the main workflows and batch tool are unchanged.
+The default batch workflow runs BiRefNet and ViTMatte. For difficult green-screen photos, the optional CorridorKey workflow is selected with `--model corridor`. Install the optional `portrait_corridorkey` custom node and its separate Python environment as described in the [setup instructions](workflow/CORRIDORKEY.md). Then restart ComfyUI and run, for example:
 
-The workflow runs BiRefNet and ViTMatte to create the foreground mask, then uses PixelSpread and Portrait Green Spill Cleanup to improve edge colors. VNCCS Chroma Key receives the cutout before exposure matching. Its corrected RGB is kept, but its alpha is discarded and the original ViTMatte alpha is restored. VNCCS's separate **matte** output is preview-only; the final composite still uses ViTMatte's mask. This avoids letting VNCCS remove green objects such as flags.
+```bash
+python portrait_batch.py --portraits ./originals --backgrounds ./backgrounds --output ./results \
+  --model corridor --corridor-repo /path/to/CorridorKey2.0 \
+  --corridor-python /path/to/CorridorKey2.0/.venv/bin/python --cutout
+```
+
+The two paths must exist on the ComfyUI server; alternatively set `CORRIDORKEY_REPO` and `CORRIDORKEY_PYTHON` on the machine running the batch script. Every server in a multi-GPU batch must have the same paths and setup. Select the server/GPU with `--comfy-url`; start each server with its intended `--cuda-device` so the external process inherits that GPU. **16 GB VRAM is recommended** for large images. On 8 GB, add `--corridor-low-vram` and, if necessary, `--corridor-max-long-edge 4800` (lower it further if an out-of-memory error occurs). `0`, the default, uses the framed image's native size. A limited result is resized back to the framed output dimensions; detail lost during downscaling cannot be recovered. Memory needs depend on image size and other GPU usage.
+
+CorridorKey uses the same BiRefNet-based framing, aspect ratio, background sizing, exposure and contrast matching, cutout output, sharpening and grain as the standard workflow. It replaces ViTMatte and the standard PixelSpread/VNCCS spill chain with its own foreground colors, alpha and despill; adjust the latter with `--corridor-despill` (0–1, default 0.5). Standard `--spill-*` settings do not apply to CorridorKey. A coarse subject mask removes disconnected foreground objects, but connected objects may remain and isolated fine details may be lost; inspect difficult images. Each image/background job reloads CorridorKey in a separate process. Existing cutouts are skipped even if made with another model; use a separate output directory for comparisons.
+
+The standard workflow runs BiRefNet and ViTMatte to create the foreground mask, then uses PixelSpread and Portrait Green Spill Cleanup to improve edge colors. VNCCS Chroma Key receives the cutout before exposure matching. Its corrected RGB is kept, but its alpha is discarded and the original ViTMatte alpha is restored. VNCCS's separate **matte** output is preview-only; the final composite still uses ViTMatte's mask. This avoids letting VNCCS remove green objects such as flags.
 
 `--spill-mode auto` is the batch default. It applies spill cleanup only when a green screen is detected and lazily skips VNCCS processing when none is detected. `--spill-mode off` bypasses both; `--spill-mode "force green"` applies both to every image. `--spill-strength` adjusts Portrait Green Spill Cleanup; VNCCS has separate settings in the workflow. Matting and PixelSpread run in every mode. In the ComfyUI UI, set the same mode on **Portrait: Green Spill Cleanup** and **Portrait: Auto VNCCS on Green Screens**.
 
@@ -101,3 +111,5 @@ The batch tool uses only Python's standard library. Apple Silicon can run the sa
 ## Updating the workflow
 
 For layout-only changes, save the UI workflow to `workflow/portrait_master_pipeline_v3.json`; the batch API workflow does not contain node positions. For graph changes, test and update both workflow files. Keep the node IDs used by `portrait_batch.py` (`120`, `125`, `156`, `141:25`, `160:25`, `180`, `203`, `208`, `211`, `212`, `213`, `46`, `147`, and `207` for `--cutout`) stable, or update the script with them. Node `147` provides the final image; node `207` previews node `46` for the transparent cutout. Node `208` is VNCCS, node `213` gates VNCCS based on `--spill-mode`, and node `209` previews its matte.
+
+The separate batch-only graph `workflow/portrait_corridorkey_pipeline_api.json` shares the framing and downstream nodes; node `214` is CorridorKey, `217` filters disconnected objects, and `215`/`216` convert coverage alpha to ComfyUI's inverted alpha convention. Keep the shared stages synchronized when changing the master workflow.

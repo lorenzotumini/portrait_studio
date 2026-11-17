@@ -8,13 +8,16 @@ from pathlib import Path
 def main():
     repo, root = (Path(value).resolve() for value in sys.argv[1:3])
     strength = sys.argv[3]
+    low_vram = len(sys.argv) < 5 or sys.argv[4] == "1"
     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     sys.path.insert(0, str(repo))
     sys.argv = [str(repo / "infer.py"), "--input", str(root / "frames"),
                 "--output_dir", str(root / "output"), "--outputs", "cutout",
                 "--output_format", "exr", "--exr_dtype", "float",
-                "--hann_chunk", "1", "--hann_stride", "1", "--low_vram",
+                "--hann_chunk", "1", "--hann_stride", "1",
                 "--temp_dir", str(root / "features"), "--despill_strength", strength]
+    if low_vram:
+        sys.argv.append("--low_vram")
     runpy.run_path(str(repo / "infer.py"), run_name="__main__")
     import cv2
     import numpy as np

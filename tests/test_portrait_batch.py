@@ -82,6 +82,26 @@ class InputConversionTests(unittest.TestCase):
 
 
 class GreenScreenWorkflowTests(unittest.TestCase):
+    def test_corridor_batch_forwards_configuration_and_keeps_common_options(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = argparse.Namespace(**batch.DEFAULTS, raw_cache_dir=str(root), center_subject=True,
+                                      cutout=True, model="corridor", corridor_repo="/server/repo",
+                                      corridor_python="/server/venv/bin/python", corridor_low_vram=True,
+                                      corridor_max_long_edge=2400, corridor_despill=0.25)
+            with patch.object(batch, "upload_image", return_value="input.png"), \
+                    patch.object(batch, "queue_workflow", return_value={"final": {"filename": "out.png"}}) as queue, \
+                    patch.object(batch, "comfy_request", return_value=b"result"):
+                batch.process_pair("http://unused", batch.CORRIDOR_WORKFLOW, root / "portrait.png",
+                                   root / "bg.png", None, args, root / "out.png")
+            graph = queue.call_args.args[1]
+            self.assertEqual(graph["214"]["inputs"], {"image": ["156", 0], "repository_path": "/server/repo",
+                             "python_executable": "/server/venv/bin/python", "low_vram": True,
+                             "max_long_edge": 2400, "despill_strength": 0.25})
+            self.assertEqual(graph["156"]["inputs"]["aspect_width"], args.aspect_width)
+            self.assertEqual(graph["46"]["inputs"]["exposure_strength"], args.exposure_strength)
+            self.assertTrue(queue.call_args.kwargs["want_cutout"])
+
     def test_ui_and_api_route_rgb_through_lazy_gate_and_restore_vitmatte_alpha(self):
         import json
         ui = json.loads((batch.PROJECT_DIR / "workflow/portrait_master_pipeline_v3.json").read_text())

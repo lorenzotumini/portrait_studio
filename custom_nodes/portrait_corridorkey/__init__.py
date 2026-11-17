@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 
 import numpy as np
+import cv2
 from PIL import Image
 import torch
 
@@ -26,7 +27,7 @@ class PortraitCorridorKeyTest:
     CATEGORY = "Portrait/Experimental"
     DESCRIPTION = "Run CorridorKey in a separate environment. Resizes to the test limit; processes each photo independently. Requires a separately installed official repository and weights."
 
-    def key(self, image, repository_path, python_executable, despill_strength, max_long_edge):
+    def key(self, image, repository_path, python_executable, despill_strength, max_long_edge, low_vram=True):
         import comfy.model_management as mm
         repo = Path(repository_path).expanduser().resolve()
         # Preserve virtualenv executable symlinks: resolving them bypasses the
@@ -48,10 +49,11 @@ class PortraitCorridorKeyTest:
                 frames.mkdir()
                 pixels = (frame.detach().cpu().numpy()[..., :3].clip(0, 1) * 255).round().astype(np.uint8)
                 photo = Image.fromarray(pixels)
-                photo.thumbnail((max_long_edge, max_long_edge), Image.Resampling.LANCZOS)
+                if max_long_edge:
+                    photo.thumbnail((max_long_edge, max_long_edge), Image.Resampling.LANCZOS)
                 photo.save(frames / "frame_000000.png")
                 command = [str(python), str(Path(__file__).with_name("runner.py")),
-                           str(repo), str(root), str(despill_strength)]
+                           str(repo), str(root), str(despill_strength), "1" if low_vram else "0"]
                 env = os.environ.copy()
                 env["OPENCV_IO_ENABLE_OPENEXR"] = "1"
                 # Do not leak ComfyUI's Python search path into the isolated env.
@@ -88,5 +90,61 @@ class PortraitCorridorKeyTest:
         return rgb, alpha, rgba, preview
 
 
-NODE_CLASS_MAPPINGS = {"PortraitCorridorKeyTest": PortraitCorridorKeyTest}
-NODE_DISPLAY_NAME_MAPPINGS = {"PortraitCorridorKeyTest": "Portrait: CorridorKey 2.0 Test"}
+class PortraitCorridorKeyBatch(PortraitCorridorKeyTest):
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs["required"]["max_long_edge"] = ("INT", {"default": 0, "min": 0, "max": 32768, "step": 1})
+        inputs["required"]["low_vram"] = ("BOOLEAN", {"default": False})
+        return inputs
+
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("foreground", "alpha", "transparent_cutout")
+    DESCRIPTION = "CorridorKey still-image matte; 0 keeps native resolution. Output is restored to framing size after any inference downscale."
+
+    def key(self, image, repository_path, python_executable, despill_strength, max_long_edge, low_vram):
+        rgb, alpha, rgba, _ = super().key(image, repository_path, python_executable, despill_strength, max_long_edge, low_vram)
+        if rgba.shape[1:3] != image.shape[1:3]:
+            # Restore the framing size for the shared composite and exposure stages.
+            rgba = torch.nn.functional.interpolate(rgba.permute(0, 3, 1, 2), size=image.shape[1:3], mode="bilinear", align_corners=False).permute(0, 2, 3, 1).clamp(0, 1)
+        return rgba[..., :3], rgba[..., 3], rgba
+
+
+class PortraitCorridorSubjectMask:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"alpha": ("MASK",), "subject_mask": ("MASK",)}}
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "filter"
+    CATEGORY = "Portrait/Experimental"
+
+    def filter(self, alpha, subject_mask):
+        if alpha.shape[-2:] != subject_mask.shape[-2:]:
+            raise ValueError("CorridorKey: subject mask and alpha dimensions differ.")
+        output = []
+        for index, matte in enumerate(alpha):
+            h, w = matte.shape
+            scale = min(1.0, 2048 / max(h, w))
+            size = (max(1, round(w * scale)), max(1, round(h * scale)))
+            a = cv2.resize(matte.detach().cpu().numpy(), size, interpolation=cv2.INTER_AREA)
+            coarse = cv2.resize(subject_mask[min(index, len(subject_mask) - 1)].detach().cpu().numpy(), size, interpolation=cv2.INTER_AREA)
+            count, labels, stats, _ = cv2.connectedComponentsWithStats((coarse > 0.5).astype(np.uint8), 8)
+            if count <= 1:
+                raise ValueError("CorridorKey: subject mask is empty; cannot select the subject safely.")
+            subject = (labels == 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])).astype(np.uint8)
+            radius = max(4, round(max(size) * 0.02))
+            subject = cv2.dilate(subject, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)))
+            count, components = cv2.connectedComponents((a > 0.05).astype(np.uint8), 8)
+            keep = np.unique(components[subject > 0]); keep = keep[keep != 0]
+            if not len(keep):
+                raise ValueError("CorridorKey: subject mask does not overlap the predicted foreground.")
+            selected = np.isin(components, keep).astype(np.uint8)
+            selected = cv2.dilate(selected, np.ones((5, 5), np.uint8))
+            selected = cv2.resize(selected, (w, h), interpolation=cv2.INTER_NEAREST)
+            output.append(matte * torch.from_numpy(selected).to(device=matte.device, dtype=matte.dtype))
+        return (torch.stack(output),)
+
+
+NODE_CLASS_MAPPINGS = {"PortraitCorridorKeyTest": PortraitCorridorKeyTest, "PortraitCorridorKeyBatch": PortraitCorridorKeyBatch, "PortraitCorridorSubjectMask": PortraitCorridorSubjectMask}
+NODE_DISPLAY_NAME_MAPPINGS = {"PortraitCorridorKeyTest": "Portrait: CorridorKey 2.0 Test", "PortraitCorridorKeyBatch": "Portrait: CorridorKey 2.0 Batch", "PortraitCorridorSubjectMask": "Portrait: CorridorKey Subject Mask"}
